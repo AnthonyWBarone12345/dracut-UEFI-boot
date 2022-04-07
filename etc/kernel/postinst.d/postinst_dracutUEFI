@@ -1,0 +1,27 @@
+#!/usr/bin/bash 
+
+inst_kern="${1}"
+[[ -e "/usr/lib/modules/${inst_kern}" ]] || inst_kern="$(/bin/ls -1 /usr/lib/modules | /bin/sort -V | /bin/tail -n 1)"
+
+/bin/systemctl daemon-reload
+
+# start building nvidia kernel modules
+/bin/rpm -qa | /bin/grep -q 'akmod' && /bin/systemctl restart --no-block akmods@${inst_kern}.service >/dev/null 2>&1
+/bin/sleep 1 
+
+# extract full vmlinux kernel from vmlinuz and symlink it into modules/build. Depending how it was configured, some parts of zfs need vmlinux here
+/usr/src/kernels/${inst_kern}/scripts/extract-vmlinux /lib/modules/${inst_kern}/vmlinuz > /lib/modules/${inst_kern}/vmlinux
+/bin/chmod +x /lib/modules/${inst_kern}/vmlinux
+/bin/ln -s /lib/modules/${inst_kern}/vmlinux /lib/modules/${inst_kern}/build/vmlinux
+/bin/ln -s /lib/modules/${inst_kern}/vmlinuz /lib/modules/${inst_kern}/build/vmlinuz
+/bin/sleep 3 
+
+# build all dkms modules for the new kernel (including zfs)
+/sbin/dkms autoinstall --kernelver "${inst_kern}" 2>&1 1>/dev/null
+/bin/sleep 3 
+
+/bin/systemctl daemon-reload && /sbin/depmod -a 
+
+. /usr/local/bin/my-scripts/dracut-UEFI-boot.sh && UEFIDracutUpdate --no-ask "${inst_kern}" 
+	
+exit 0
