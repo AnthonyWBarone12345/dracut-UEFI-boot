@@ -64,9 +64,13 @@ UEFIDracutUpdate() {
 	local rootFlags="";
 	local userResponse="";
 	local noAskFlag="";
+	local nn=""
+ 	local kernelCmdline_static="";
+ 	local kernelCmdline_static="";
  	local kernelCmdline_static="";
  	local dracutArgsExtra=""
-	local nn=""
+ 	local dracutArgsNoRescue=""
+ 	local dracutArgsRescue=""
 	local mm=""
 	local ll=""
 	local usrDisk=""
@@ -88,11 +92,15 @@ UEFIDracutUpdate() {
 	# disable selinux when running from a live os
 	[[ -n "$(findmnt / | grep '/dev/mapper/live')" ]] && setenforce 0
 
-	kernelCmdline_static='rd.driver.pre=tpm rd.timeout=60 rd.locale.LANG=en_US.UTF-8 rd.udev.log-priority=info rd.lvm=0 rd.lvm.conf=0 rd.md=0 rd.md.conf=0 rd.dm=0 rd.dm.conf=0 systemd.unified_cgroup_hierarchy gpt intel_pstate=per_cpu_perf_limits zswap.enabled=1 zswap.compressor=lzo-rle transparent_hugepages=always panic=60 init=/usr/lib/systemd/systemd rd.skipfsck'
+	kernelCmdline_static='rd.driver.pre=tpm rd.timeout=60 rd.locale.LANG=en_US.UTF-8 rd.udev.log-priority=info rd.lvm=0 rd.lvm.conf=0 rd.md=0 rd.md.conf=0 rd.dm=0 rd.dm.conf=0 systemd.unified_cgroup_hierarchy gpt intel_pstate=per_cpu_perf_limits zswap.enabled=1 zswap.compressor=lzo-rle transparent_hugepages=madvise panic=60 init=/usr/lib/systemd/systemd rd.skipfsck'
 
 	kernelCmdline_spectreMeltdownMitigations='spec_store_bypass_disable=prctl noibrs noibpb spectre_v2=auto pti=auto'
 	
-	dracutArgsExtra='--persistent-policy "by-id" --no-hostonly-i18n --no-hostonly --nostrip --hostonly-cmdline --early-microcode --nohardlink  --install /bin/vim --install /bin/tee --install /bin/seq --install /bin/find --install /bin/env --install /bin/wc --install /bin/tail --install /bin/head --force-add crypt --force-add dm --force-add zfs --force-add bash --force-add dracut-systemd --force-add systemd --force-add uefi-lib --force-add kernel-modules --force-add kernel-modules-extra --force-add iscsi --force-add plymouth --include /etc/iscsi/initiatorname.iscsi /etc/iscsi/initiatorname.iscsi --include /run/cryptsetup /run/cryptsetup --nofscks'
+	dracutArgsExtra='--persistent-policy "by-id" --nostrip --hostonly-cmdline --early-microcode --nohardlink  --install /bin/vim --install /bin/tee --install /bin/seq --install /bin/find --install /bin/env --install /bin/wc --install /bin/tail --install /bin/head --force-add crypt --force-add dm --force-add zfs --force-add bash --force-add dracut-systemd --force-add systemd --force-add uefi-lib --force-add kernel-modules --force-add kernel-modules-extra --force-add iscsi --force-add plymouth --include /etc/iscsi/initiatorname.iscsi /etc/iscsi/initiatorname.iscsi --include /run/cryptsetup /run/cryptsetup'
+
+	dracutArgsNoRescue='--hostonly --hostonly-i18n --hostonly-mode sloppy'
+	dracutArgsRescue='--no-hostonly --no-hostonly-i18n -a "rescue"'
+
 
 	# parse inputs
 	noAskFlag=0
@@ -101,12 +109,11 @@ UEFIDracutUpdate() {
 		[[ ${nn,,} =~ ^(.+\ )?-+no?-?a(sk)?(\ .+)?$ ]] && noAskFlag=1 && continue 
 		echo "${kernelsAvailable}" | grep -q "${nn}" && kernels[${#kernels[@]}]="${nn}";
 	done
-	[[ -z "${kernels[@]}" ]] && kernels=( ${kernelsAvailable} )
-	[[ -z "${kernels[@]}" ]] && echo "ERROR: no kernels could be found at /usr/lib/modules/*" >&2 && return 1
+	[[ -z "${kernels[*]}" ]] && kernels=( ${kernelsAvailable} )
+	[[ -z "${kernels[*]}" ]] && echo "ERROR: no kernels could be found at /usr/lib/modules/*" >&2 && return 1
 
 	if [[ -z ${addTPMFlag} ]]; then
-		addTPMFlag=0
-		(( $(rpm -qa | grep -E 'tpm2\-((tools)|(tss))' | wc -l) == 2 )) && addTPMFlag=1
+		(( $(rpm -qa | grep -E 'tpm2\-((tools)|(tss))' | wc -l) == 2 )) && addTPMFlag=1 || addTPMFlag=0
 	fi
 
 	# ensure EFI is mounted
@@ -120,9 +127,9 @@ UEFIDracutUpdate() {
 		rootDisk='ZFS=FEDORA/ROOT'
 		rootFSType='zfs'
 		rootFlags='zfsutil,rw,relatime,xattr,posixacl'
-		bootDisk='/dev/disk/by-id/<bootPartitionID>'
-		luksUUID='luks-<luksUUID>'
-		#luksUUID="luks-$(cryptsetup luksUUID /dev/disk/by-id/<luksPartitionID)"
+		bootDisk='/dev/disk/by-id/<boot-disk-ID>'
+		luksUUID='luks-<luks-uuid>'
+		#luksUUID="luks-$(cryptsetup luksUUID /dev/disk/by-id/<luks-disk-ID>)"
 		#usrDisk='ZFS=FEDORA/ROOT/USR'
 		#usrFSType='zfs'
 		#usrFlags='zfsutil,rw,relatime,xattr,posixacl'
@@ -139,7 +146,7 @@ UEFIDracutUpdate() {
 
 	[[ -z "${rootFSType}" ]] && [[ -n "$(mount -l | grep 'on / type' | sed -E s/'^.* on \/ type ([^ ]*) .*$'/'\1'/)" ]] && rootFSType="$(mount -l | grep 'on / type' | sed -E s/'^.* on \/ type ([^ ]*) .*$'/'\1'/)";
 	[[ "${rootDisk}" == "ZFS="* ]] && rootFSType='zfs'
-	[[ ${rootFSType#*=} =~ ^[Zz][Ff][Ss]$ ]] && rootFSype="zfs" && [[ -n "${rootDisk}" ]] && rootDisk="ZFS=$(echo "${rootDisk}" | sed -E s/'^[Zz][Ff][Ss]=(.*)'/'\1'/)"
+	[[ ${rootFSType#*=} =~ ^[Zz][Ff][Ss]$ ]] && rootFSType="zfs" && [[ -n "${rootDisk}" ]] && rootDisk="ZFS=$(echo "${rootDisk}" | sed -E s/'^[Zz][Ff][Ss]=(.*)'/'\1'/)"
 	
 	[[ -z "${rootFlags}" ]] && [[ -n "$(mount -l | grep 'on / type' | sed -E s/'^.* on \/ type [^ ]* \(([^\)]*)\).*$'/'\1'/)" ]] && rootFlags="$(mount -l | grep 'on / type' | sed -E s/'^.* on \/ type [^ ]* \(([^\)]*)\).*$'/'\1'/)";
 	[[ ${rootFSType#*=} =~ ^[Zz][Ff][Ss]$ ]] && rootFlags="${rootFlags//'seclabel'/}" && [[ ! ${rootFlags#'rootFlags='} =~ ^(.+,)?zfsutil(,.+)?$ ]] && rootFlags="zfsutil,${rootFlags#'rootFlags='}"
@@ -155,7 +162,7 @@ UEFIDracutUpdate() {
 	
 	# same steps as above, but for a separate /usr mount (if it exists)
 
-	( [[ -n "$(cat /etc/mtab | grep ' /usr ')" ]] || [[ -n "${usrDisk}${usrFSType}${usrFlags}" ]] ) && [[ -z ${usrMountFlag} ]] && usrMountFlag=1
+	[[ -z ${usrMountFlag} ]] && { [[ -n "$(cat /etc/mtab | grep ' /usr ')" ]] || [[ -n "${usrDisk}${usrFSType}${usrFlags}" ]]; } && usrMountFlag=1
 
 
 	if (( $usrMountFlag == 1 )); then
@@ -164,7 +171,7 @@ UEFIDracutUpdate() {
 	
 		[[ -z "${usrFSType}" ]] && [[ -n "$(mount -l | grep 'on /usr type' | sed -E s/'^.* on \/usr type ([^ ]*) .*$'/'\1'/)" ]] && usrFSType="$(mount -l | grep 'on /usr type' | sed -E s/'^.* on \/usr type ([^ ]*) .*$'/'\1'/)";
 		[[ "${usrDisk}" == 'ZFS='* ]] && usrFSType='zfs'	
-		[[ ${usrFSType#*=} =~ ^[Zz][Ff][Ss]$ ]] && usrFSype="zfs" && [[ -n "${usrDisk}" ]] && usrDisk="ZFS=$(echo "${usrDisk}" | sed -E s/'^[Zz][Ff][Ss]=(.*)'/'\1'/)"
+		[[ ${usrFSType#*=} =~ ^[Zz][Ff][Ss]$ ]] && usrFSType="zfs" && [[ -n "${usrDisk}" ]] && usrDisk="ZFS=$(echo "${usrDisk}" | sed -E s/'^[Zz][Ff][Ss]=(.*)'/'\1'/)"
 	
 		[[ -z "${usrFlags}" ]] && [[ -n "$(mount -l | grep 'on /usr type' | sed -E s/'^.* on \/usr type [^ ]* \(([^\)]*)\).*$'/'\1'/)" ]] && usrFlags="$(mount -l | grep 'on /usr type' | sed -E s/'^.* on \/usr type [^ ]* \(([^\)]*)\).*$'/'\1'/)";
 		[[ ${usrFSType#*=} =~ ^[Zz][Ff][Ss]$ ]] && [[ ! ${usrFlags#'mount.usrflags='} =~ ^(.+,)?zfsutil(,.+)?$ ]] && usrFlags="zfsutil,${usrFlags#'mount.usrflags='}"
@@ -181,7 +188,7 @@ UEFIDracutUpdate() {
 	[[ -n "${luksUUID}" ]] && kernelCmdline_static+=" rd.driver.pre=dm_crypt driver.pre=dm_crypt rd.luks.allow-discards rd.luks.timeout=60"
 		rpm -qa | grep -q 'zfs' && kernelCmdline_static+=" zfs.zfs_flags=0x1D8 zfs_ignorecache=1"
 
-	[[ ${rootFSType#*=} =~ ^[Zz][Ff][Ss]$ ]] && kernelCmdline_static+=" rd.driver.pre=zfs driver.pre=zfs zfs_force=1" && dracutArgsExtra+=" --force-drivers zfs"
+	[[ ${rootFSType#*=} =~ ^[Zz][Ff][Ss]$ ]] && kernelCmdline_static+=" rd.driver.pre=zfs driver.pre=zfs zfs_force=1" && dracutArgsExtra+=" --force-drivers zfs --nofsck"
 
 	kernelCmdline_static+=" systemd.show_status rd.info rd.shell rd.driver.pre=vfat rhgb"
 
@@ -231,9 +238,10 @@ UEFIDracutUpdate() {
 		done
 	fi
 
-	# include /etc/hostid
+	# include /etc/hostid and /etc/machine-id
 	( [[ -f /etc/hostid ]] && [[ -z $(find /etc/hostid -empty) ]] ) || hostid > /etc/hostid
 	dracutArgsExtra+=" --include /etc/hostid /etc/hostid"
+	[[ -f /etc/machine-id ]] && dracutArgsExtra+=' --include /etc/machine-id  /etc/machine-id'
 
 	# manually specify boot stub location
 	[[ -e "/usr/lib/systemd/boot/efi/linuxx64.efi.stub" ]] && dracutArgsExtra+=" --uefi-stub /usr/lib/systemd/boot/efi/linuxx64.efi.stub"
@@ -247,11 +255,6 @@ UEFIDracutUpdate() {
 	# ensure kernel module info is up to date
 	sudo depmod -a
 
-	#if [[ "$(sudo systemctl get-default)" == "graphical.target" ]]; then
-	#	sudo systemctl set-default graphical.target;
-	#	sudo systemctl set-default graphical.target --global --user;
-	#	sudo systemctl set-default graphical.target --global --system;
-	#fi
 	sudo systemctl daemon-reload;
 	#sudo systemctl daemon-reload --global --user;
 	#sudo systemctl daemon-reload --global --system;
@@ -271,10 +274,13 @@ UEFIDracutUpdate() {
 		
 		# shift efi files and ensure systemd and module info are up to date systemd
 		UEFIBootUpdate --shift-efi "${kernels[$ll]}"
-		
-		# ( [[ -e "/usr/lib/modules/${nn}" ]] || [[ -e "/usr/src/kernels/${nn}" ]] ) && 
+	
+		# generate rescue, if needed	
+		UEFIBootUpdate --check-rescue "${kernels[$ll]}" || { su -c 'dracut -fvM --uefi --kernel-cmdline "'"${kernelCmdline}"'" --kver '"${kernels[$ll]}"' '"${dracutArgsExtra}"' '"${dracutArgsRescue}"' '"${dracutArgsExtraKmod[$ll]}"; UEFIBootUpdate --shift-efi-rescue "${kernels[$ll]}"; }
 		# generate EFI executable boot image with dracut
-		su -c 'dracut -fvM --uefi --kernel-cmdline "'"${kernelCmdline}"'" --kver '"${kernels[$ll]}"' '"${dracutArgsExtra}"' '"${dracutArgsExtraKmod[$ll]}";
+		su -c 'dracut -fvM --uefi --kernel-cmdline "'"${kernelCmdline}"'" --kver '"${kernels[$ll]}"' '"${dracutArgsExtra}"' '"${dracutArgsNoRescue}"' '"${dracutArgsExtraKmod[$ll]}";
+
+
 		
 	done
 
@@ -292,11 +298,11 @@ UEFIBootUpdate() {
 	#
 	# 		---------- NOTES ----------
 	#
-	#	BACKUPS: By default, the current .efi file (for a given kernel) will be copied into "*_WORKING.efi" to serve as a working backup IFF this file doesnt yet exist. 
+	#	BACKUPS: By default, the current .efi file (for a given kernel) will be copied into "*_RESCUE.efi" to serve as a working backup IFF this file doesnt yet exist. 
 	#		Additionally, before anything is deleted, the entire ESP will be copied to <ESP_MOUNT_POINT>_BACKUP 
 	#
 	#	FILE LOCATIONS: All efi files on the ESP are automatically consolidated into <ESP_MOUNT_POINT>/Linux
-	#		If there are files  of the same backup type (standard, _OLD, _WORKING) for a given kernel in multiple locations 
+	#		If there are files  of the same backup type (standard, _OLD, _RESCUE) for a given kernel in multiple locations 
 	#		(e.g., <ESP_MOUNT_POINT>/Linux and <ESP_MOUNT_POINT>/EFI/Linux) the newest will be copied and moved to <ESP_MOUNT_POINT>/Linux, and the rest will be deleted
 	#	
 	#	EXTRA INPUTS: Any additional inputs are interpreted as a list of valid kernels to operate on, formatted as in $(uname -r). 
@@ -308,31 +314,34 @@ UEFIBootUpdate() {
 
 	local nn="";
 	local mm="";
-	local efiCurMenu="";
 	local efiMount="";
 	local efiDev0="";
 	local efiDev="";
 	local efiPart="";
 	local efiPartUUID=""
 	local efiFileList=""; 
+	local -a efiFileListA ;
 	local efiFileListTemp=""
 	local efiFileListTemp0=""; 
 	local -a efiFileListTemp0a;
 	local -a efiFileListTempOLDa;
-	local -a efiFileListTempWORKINGa;
+	local -a efiFileListTempRESCUEa;
 	local efiFileListTempKeep="";
 	local kverKernel="";
+	local -a kverKernelA
 	local -a kverKernelValid;
 	local shiftEFIFlag=0;
+	local checkRescueFlag=0;
 
 	# remove duplicate and nonexistent entries
 	UEFIAutoRemove
 
 	# parse inputs
 
-	[[ ${1,,} =~ ^-+s(hift)?-?(e(fi)?)?$ ]] && shiftEFIFlag=1 && shift 1
-
 	for nn in "${@}"; do
+		[[ "${nn,,}" =~ ^-+s(hift)?-?(e(fi)?)?$ ]] && shiftEFIFlag=1 && continue
+		[[ "${nn,,}" =~ ^-+s(hift)?-?(e(fi)?)?-r(escue)?$ ]] && shiftEFIFlag=2 && continue
+		[[ "${nn,,}" =~ ^-+c(heck)?-?(r(escue)?)?$ ]] && checkRescueFlag=1 && continue
 		[[ -d "/usr/lib/modules/${nn}" ]] && kverKernelValid[${#kverKernelValid[@]}]="${nn}"
 	done
 
@@ -350,10 +359,6 @@ UEFIBootUpdate() {
 	echo -e "\nThe following properties have been identified for the EFI system partition: \n	Mount Point: \t ${efiMount} \n	Device Name: \t ${efiDev} \n	Partition:	 \t ${efiPart} \n"
 	sleep 1
 
-	# get list of current menu entries and kernel versions of items to add
-	
-	efiCurMenu="$(efibootmgr -v 2>&1)"
-
 	efiFileList="$(su -c 'find '"${efiMount}"' -type f -name '"'"'linux-*.efi'"'" | grep -E '\/Linux\/[^\/]+$' | sort -V)"
 	[[ -z "${efiFileList}" ]] && echo "No .efi files found on the EFI Partition at '${efiMount}/EFI/Linux/linux-*.efi'" >&2 && return 1
 
@@ -361,17 +366,28 @@ UEFIBootUpdate() {
 
 	(( ${#kverKernelValid[@]} > 0 )) && kverKernel="$(echo "${kverKernel}" | while read -r nn; do for mm in "${kverKernelValid[@]}"; do echo "${nn}" | grep -q "${mm}" && echo "${nn}";  done; done)"
 
+	(( ${checkRescueFlag} == 1 )) && (( $(echo "${kverKernel}" | wc -l) > 1 )) && echo "WARNING: the --check-rescue flag can only be evaluated for a single kernel. Multiple kernels were specified. The FIRST kernel listed ($(echo "${kverKernel}" | head -n 1)) will be evaluated" >&2
 
-	if (( $shiftEFIFlag == 1 )); then
-	       	echo "${kverKernel}" | while read -r nn; do
+	mapfile -t kverKernelA < <(echo "${kverKernel}")
+
+	if { (( ${shiftEFIFlag} > 0 )) || (( ${checkRescueFlag} == 1 )); }; then
+		for nn in "${kverKernelA[@]}"; do
                 	efiFileListTemp="$(echo "${efiFileList}" | grep "${nn}")"
                 	efiFileListTemp0="$(echo "${efiFileListTemp}" | grep -E "${nn}(-[0-9a-zA-Z]{32})?\.efi")"
 
-                	# skip if no "current" EFI file found for given kernel
-                	[[ -n ${efiFileListTemp0} ]] || continue
-
                 	# Copy into _OLD if shiftEFIFlag=1
-                	su -c '\cp -f '"${efiFileListTemp0}"' '"${efiFileListTemp0//$(uname -m)/$(uname -m)_OLD}" && echo "Copying ${efiFileListTemp0} into ${efiFileListTemp0//$(uname -m)/$(uname -m)_OLD} \n" >&2
+                	# skip if no "current" EFI file found for given kernel
+                	if (( $shiftEFIFlag > 0 )) && [[ -n ${efiFileListTemp0} ]]; then
+				echo "${efiFileListTemp0}" | while read -r efiFileListTemp00; do 
+					(( $shiftEFIFlag == 1 )) && su -c '\mv -f '"${efiFileListTemp00}"' '"${efiFileListTemp00//$(uname -m)/$(uname -m)_OLD}" && echo "Moving ${efiFileListTemp00} into ${efiFileListTemp00//$(uname -m)/$(uname -m)_OLD} \n" >&2
+					(( $shiftEFIFlag == 2 )) && su -c '\mv -f '"${efiFileListTemp00}"' '"${efiFileListTemp00//$(uname -m)/$(uname -m)_RESCUE}" && echo "Moving ${efiFileListTemp00} into ${efiFileListTemp00//$(uname -m)/$(uname -m)_RESCUE} \n" >&2
+				done
+			fi
+			
+		       	if (( ${checkRescueFlag} == 1 )); then
+				echo "${efiFileListTemp}" | grep -q "_RESCUE" && return 0 || return 1
+			fi
+			
 		done
 		return
 	fi
@@ -380,13 +396,14 @@ UEFIBootUpdate() {
 	sudo rsync -a "${efiMount}" "${efiMount}_BACKUP"
 
 	# consolidate files into "${efiMount}/EFI/Linux"
-	# if multiple versions exist (*.efi, *_OLD.efi, *_WORKING.efi) for a given kernel, keep the newest
-	echo "${kverKernel}" | while read -r nn; do
+	# if multiple versions exist (*.efi, *_OLD.efi, *_RESCUE.efi) for a given kernel, keep the newest
+	for nn in "${kverKernelA[@]}"; do
 		efiFileListTemp="$(echo "${efiFileList}" | grep "${nn}")"
 		efiFileListTemp="$(echo "${efiFileListTemp}" | grep "${efiMount}/EFI/Linux"; echo "${efiFileListTemp}" | grep -v "${efiMount}/EFI/Linux")"
 		mapfile -t efiFileListTemp0a < <(echo "${efiFileListTemp}" | grep -E "${nn}(-[0-9a-zA-Z]{32})?\.efi")
 		mapfile -t efiFileListTempOLDa < <(echo "${efiFileListTemp}" | grep -E "${nn}[^\-]*_OLD(-[0-9a-zA-Z]{32})?\.efi")
-		mapfile -t efiFileListTempWORKINGa < <(echo "${efiFileListTemp}" | grep -E "${nn}[^\-]*_WORKING(-[0-9a-zA-Z]{32})?\.efi")
+		mapfile -t efiFileListTempRESCUEa < <(echo "${efiFileListTemp}" | grep -E "${nn}[^\-]*_RESCUE(-[0-9a-zA-Z]{32})?\.efi")
+		mapfile -t efiFileListTempOTHERa < <(echo "${efiFileListTemp}" | grep -v -E "${nn}(-[0-9a-zA-Z]{32})?\.efi" | grep -v -E "${nn}[^\-]*_OLD(-[0-9a-zA-Z]{32})?\.efi" | grep -v -E "${nn}[^\-]*_RESCUE(-[0-9a-zA-Z]{32})?\.efi")
 
 		if (( ${#efiFileListTemp0a[@]} > 1 )); then
 			efiFileListTempKeep="${efiFileListTemp0a[0]}"
@@ -418,12 +435,27 @@ UEFIBootUpdate() {
 			echo "" >&2
 		fi
 
-		if (( ${#efiFileListTempWORKINGa[@]} > 1 )); then
-			efiFileListTempKeep="${efiFileListTempWORKINGa[0]}"
+		if (( ${#efiFileListTempRESCUEa[@]} > 1 )); then
+			efiFileListTempKeep="${efiFileListTempRESCUEa[0]}"
 
-			if (( ${#efiFileListTempWORKINGa[@]} > 1 )); then
-				echo "Duplicate \"*_WORKING.efi\" entries for kernel ${nn}..." >&2
-				printf '%s\n' "${efiFileListTempWORKINGa[@]}" | tail -n +2 | while read -r mm; do
+			if (( ${#efiFileListTempRESCUEa[@]} > 1 )); then
+				echo "Duplicate \"*_RESCUE.efi\" entries for kernel ${nn}..." >&2
+				printf '%s\n' "${efiFileListTempRESCUEa[@]}" | tail -n +2 | while read -r mm; do
+					echo "Deleting ${mm}" >&2
+				   	su -c '[[ -f '"${mm}"' ]] && rm -f '"${mm}"
+				done
+			fi
+
+			[[ "${efiFileListTempKeep}" =~ ^${efiMount}\/EFI\/Linux\/linux-[^\/]+\.efi$ ]] || ( su -c '\mv -f '"${efiFileListTempKeep}"' '"${efiMount}/EFI/Linux/${efiFileListTempKeep##*/}" && echo "Moved ${efiFileListTempKeep} to ${efiMount}/EFI/Linux/${efiFileListTempKeep##*/}" >&2 )
+			echo "" >&2
+		fi
+
+		if (( ${#efiFileListTempOTHERa[@]} > 1 )); then
+			efiFileListTempKeep="${efiFileListTempOTHERa[0]}"
+		
+			if (( ${#efiFileListTempOTHERa[@]} > 1 )); then
+				echo "Duplicate \"OTHER\" entries for kernel ${nn}..." >&2
+				printf '%s\n' "${efiFileListTempOTHERa[@]}" | tail -n +2 | while read -r mm; do 
 					echo "Deleting ${mm}" >&2
 				   	su -c '[[ -f '"${mm}"' ]] && rm -f '"${mm}"
 				done
@@ -441,32 +473,14 @@ UEFIBootUpdate() {
 	efiFileList="$(su -c 'find '"${efiMount}"' -type f -name '"'"'linux-*.efi'"'" | grep -E '\/EFI\/Linux\/linux-[^\/]+\.efi$' | sort -V)";
 	[[ -z "${efiFileList}" ]] && echo "No .efi files found on the EFI Partition at '${efiMount}/EFI/Linux/linux-*.efi'" >&2 && return 1
 
-	# check if *_WORKING.efi boot file exists, if not copy current efi boot file into *_WORKING efi boot file
-	# shift into *_OLD.efi if --shift-efi flag is given 
-	echo "${kverKernel}" | while read -r nn; do 
-		efiFileListTemp="$(echo "${efiFileList}" | grep "${nn}")"
-		efiFileListTemp0="$(echo "${efiFileListTemp}" | grep -E "${nn}(-[0-9a-zA-Z]{32})?\.efi")"
+	# sort efiFileList(-[0-9a-zA-Z]{32})?\.efi"
+	efiFileList="$(cat <(echo "${efiFileList}" | grep -v '_RESCUE' | grep -v '_OLD' | grep -v -E "$(uname -m)"'(-[0-9a-zA-Z]{32})?\.efi' | sort -V) <(echo "${efiFileList}" | grep '_RESCUE' | sort -V) <(echo "${efiFileList}" | grep '_OLD' | grep -v '_RESCUE' | sort -V) <(echo "${efiFileList}" | grep -v '_OLD' | grep -v '_RESCUE'  | grep -E "$(uname -m)"'(-[0-9a-zA-Z]{32})?\.efi' | sort -V))"
 
-		# skip if no "current" EFI file found for given kernel
-		[[ -n ${efiFileListTemp0} ]] || continue
-
-		# Copy into _WORKING if it doesnt already exist
-		su -c '! [[ -f '"${efiFileListTemp0//$(uname -m)/$(uname -m)_WORKING}"' ]] && \cp -f '"${efiFileListTemp0}"' '"${efiFileListTemp0//$(uname -m)/$(uname -m)_WORKING}" && echo -e "\nNO \"*_WORKING.efi\" BACKUP EXISTS for ${efiFileListTemp0} -- copying ${efiFileListTemp0} into ${efiFileListTemp0//$(uname -m)/$(uname -m)_WORKING} \n" >&2 
-
-		# Copy into _OLD if shiftEFIFlag=1
-		(( ${shiftEFIFlag} == 1 )) && su -c '\cp -f '"${efiFileListTemp0}"' '"${efiFileListTemp0//$(uname -m)/$(uname -m)_OLD}" && echo -e "\nSHIFTING CURRENT \"*.efi\" INTO \"*_OLD.efi\" for ${efiFileListTemp0} -- copying ${efiFileListTemp0} into ${efiFileListTemp0//$(uname -m)/$(uname -m)_OLD} \n" >&2 
-
-	done
-	
-	# regenerate efiFileList
-	efiFileList="$(su -c 'find '"${efiMount}"' -type f -name '"'"'linux-*.efi'"'" | grep -E '\/Linux\/[^\/]*$' | sort -V)"
-
-	# sort efiFileList
-	efiFileList="$(cat <(echo "${efiFileList}" | grep '_OLD' | sort -V) <(echo "${efiFileList}" | grep '_WORKING' | grep -v '_OLD' | sort -V) <(echo "${efiFileList}" | grep -v '_WORKING' | grep -v '_OLD' | sort -V))"
+	mapfile -t efiFileListA < <(echo "${efiFileList}")
 
 	# update efi boot entries with efibootmgr
-	echo "${efiFileList}" | while read -r nn; do
-		echo "${efiCurMenu}" | grep "${efiPartUUID}" | grep -q "$(echo -n 'File('"${nn##"$efiMount"}" | sed -E s/'\/'/'\\\\'/g)" || echo "Adding boot entry for ${nn}" >&2 && su -c 'efibootmgr -c -d '"${efiDev}"' -p '"${efiPart}"' -l '"$(echo -n "${nn##"$efiMount"}")"' -L '"Fedora-EFI_$(echo -n "${nn##*linux-}" | sed -E s/'^([^-]*-[^-]*)(-[0-9a-zA-Z]{32})?\.efi$'/'\1'/)"' 1>/dev/null'
+	for nn in "${efiFileListA[@]}"; do
+		efibootmgr -v 2>&1 | grep "${efiPartUUID}" | grep -q "$(echo -n 'File('"${nn##"$efiMount"}" | sed -E s/'\/'/'\\\\'/g)" || { echo "Adding boot entry for ${nn}" >&2 && su -c 'efibootmgr -c -d '"${efiDev}"' -p '"${efiPart}"' -l '"$(echo -n "${nn##"$efiMount"}")"' -L '"Fedora-EFI_$(echo -n "${nn##*linux-}" | sed -E s/'^([^-]*-[^-]*)(-[0-9a-zA-Z]{32})?\.efi$'/'\1'/)"' 1>/dev/null'; }
 	done
 
 	# remove duplicate and non-existant entries
@@ -476,7 +490,7 @@ UEFIBootUpdate() {
 	UEFIBootOrderAutoSort
 
 	# print new boot order (unless using --shift-efi)
-	(( $shiftEFIFlag == 1 )) || UEFIBootOrderList -v
+	UEFIBootOrderList -v
 
 
 }
@@ -488,11 +502,10 @@ UEFIBootOrderAutoSort() {
 	local -a efiFileListA
 	local efiMenu
 	local bootOrderInd
-	local curInd
 
 	efiMount="$(myFindEFIMount)"
 	efiFileList="$(su -c 'find '"${efiMount}"' -type f -name '"'"'linux-*.efi'"'" | grep -E '\/Linux\/[^\/]*$' | sort -Vr)"
-	efiFileList="$(cat <(echo "${efiFileList}" | grep -v '_WORKING' | grep -v '_OLD' | sort -Vr) <(echo "${efiFileList}" | grep '_WORKING' | sort -Vr) <(echo "${efiFileList}" | grep '_OLD' | sort -Vr) | sed -E s/'^\/efi'//)"
+	efiFileList="$(cat <(echo "${efiFileList}" | grep -v '_RESCUE' | grep -v '_OLD' | grep -E "$(uname -m)"'(-[0-9a-zA-Z]{32})?\.efi' | sort -Vr) <(echo "${efiFileList}" | grep '_OLD' | grep -v '_RESCUE' | sort -Vr) <(echo "${efiFileList}" | grep '_RESCUE' | sort -Vr) <(echo "${efiFileList}" | grep -v '_RESCUE' | grep -v '_OLD' | grep -v -E "$(uname -m)"'(-[0-9a-zA-Z]{32})?\.efi' | sort -Vr) | sed -E s/'^\/efi'//)"
 	mapfile -t efiFileListA < <(echo "${efiFileList}")
 
 	efiMenu="$(efibootmgr -v | grep -E '^Boot[0-9a-fA-F]{4}')"
@@ -621,15 +634,35 @@ myuniq() {
 		echo "${outCur}"
 	done
 
-	#outAll="$(echo "${outAll}" | grep -E '.+')"
-	#echo "${outAll}"
 }
 
 
-UEFIKernelPostInstallSetup() { 
-	# setup kernel post install script to automatically re-make the bootable efi files after a kernel update
+my-uniq() {
+	# returns unique elements in a list
+	# replacement for 'uniq', which is straight broken on my system
+	# input should be list separated by newlines/spaces/tabs/commas
+	# output is newline-separated list
 
-	cat<<'EOF' | tee "/etc/kernel/postinst.d/postinst_dracutUEFI"
+	local inAll=""
+	local outAll=""
+
+	(( $# > 0 )) && inAll="${*}" || inAll="$(cat <&0)"
+	inAll="$( echo -n "${inAll}" | sed -zE s/'[\ \,\t]'/'\n'/g | sed -zE s/'\n+'/'\n'/g )"
+
+	while [[ -n "${inAll}" ]]; do
+		outAll="$( echo "${outAll}" && echo "${inAll}" | head -n 1 )"
+		inAll="$( echo -n "${inAll}" | grep -v -F "$(echo -n "${inAll}" | head -n 1)" )"
+	done
+
+	outAll="$(echo "${outAll}" | grep -E '^.+$')"
+	echo "${outAll}"
+}
+
+
+UEFIKernelPostInstallSetup() {
+        # setup kernel post install script to automatically re-make the bootable efi files after a kernel update
+
+        cat<<'EOF' | tee "/etc/kernel/postinst.d/postinst_dracutUEFI"
 #!/usr/bin/bash 
 
 inst_kern="${1}"
@@ -656,7 +689,7 @@ inst_kern="${1}"
 
 EOF
 
-	cat << EOF | tee -a "/etc/kernel/postinst.d/postinst_dracutUEFI"
+        cat << EOF | tee -a "/etc/kernel/postinst.d/postinst_dracutUEFI"
 
 . "$(realpath "${BASH_SOURCE[0]}")" && UEFIDracutUpdate --no-ask "\${inst_kern}"
 
@@ -664,7 +697,7 @@ exit 0
 
 EOF
 
-	chmod 755 "/etc/kernel/postinst.d/postinst_dracutUEFI"
+        chmod 755 "/etc/kernel/postinst.d/postinst_dracutUEFI"
 
 }
 
@@ -837,6 +870,7 @@ UEFIRemoveNonExistantBootEntries() {
 	local efibootmgrFlag=""
 	local -a removalType;
 	local keepFlag
+	local kernelCheckRegex
 
 	for nn in "${@}"; do
 		[[ "${nn}" =~ ^-[qv]$ ]] && efibootmgrFlag="${nn}"
@@ -853,6 +887,8 @@ UEFIRemoveNonExistantBootEntries() {
 
 	mapfile -t efiAllCur < <(efibootmgr -v | grep 'HD(' | grep 'File(')
 
+	kernelCheckRegex="$(echo '(('$(myFindInstalledKernels)'))' | sed -E s/' '/')|('/g)"
+
 	for nn in "${efiAllCur[@]}"; do 
 		efiPathCur="${nn#*File(}"
 		efiPathCur="${efiPathCur%)}"
@@ -862,7 +898,7 @@ UEFIRemoveNonExistantBootEntries() {
 		keepFlag=1
 
 		printf '%s\n' "${removalType[@]}" | grep -q 'efi' && su -c '[[ -f '"${efiPathCur}"' ]]' || keepFlag=0
-		printf '%s\n' "${removalType[@]}" | grep -q 'kernel' && myFindInstalledKernels | grep -q "$(echo "${efiPathCur}" | sed -E s/'^.*\\linux-(.*\.efi)\)$'/'\1'/ | sed -E s/'((_OLD)|(_WORKING))'//g | sed -E s/'-[0-9a-f]{0,32}\.efi'// | sed -E s/'^.*\/linux-'//)" || keepFlag=0
+		printf '%s\n' "${removalType[@]}" | grep -q 'kernel' && echo "${efiPathCur}" | grep -q -E "${kernelCheckRegex}" || keepFlag=0
 
 		(( ${keepFlag} == 1 )) && continue
 
@@ -906,7 +942,7 @@ UEFIBootFilesForExactOLDDuplicates() {
 	local nnCUR
 	local nnOLD
 
-	efiFileList="$(su -c 'find '"$(myFindEFIMount)"' -type f -name '"'"'linux-*.efi'"'" | grep -v '_WORKING')"
+	efiFileList="$(su -c 'find '"$(myFindEFIMount)"' -type f -name '"'"'linux-*.efi'"'" | grep -v '_RESCUE')"
 	mapfile -t installedKernels < <(myFindInstalledKernels)
 
 	for ker in "${installedKernels[@]}"; do
@@ -954,37 +990,9 @@ UEFIAutoRemove() {
 }
 
 
-my-uniq() {
-	# returns unique elements in a list
-	# replacement for 'uniq', which is straight broken on my system
-	# input should be list separated by newlines/spaces/tabs/commas
-	# output is newline-separated list
+# -----------------------------------------------------------------------------------------------------------------------------
 
-	local inAll=""
-	local outAll=""
-
-	(( $# > 0 )) && inAll="${*}" || inAll="$(cat <&0)"
-	inAll="$( echo -n "${inAll}" | sed -zE s/'[\ \,\t]'/'\n'/g | sed -zE s/'\n+'/'\n'/g )"
-
-	while [[ -n "${inAll}" ]]; do
-		outAll="$( echo "${outAll}" && echo "${inAll}" | head -n 1 )"
-		inAll="$( echo -n "${inAll}" | grep -v -F "$(echo -n "${inAll}" | head -n 1)" )"
-	done
-
-	outAll="$(echo "${outAll}" | grep -E '^.+$')"
-	echo "${outAll}"
-}
-
-# ------------------------------------------------------------------------------------------------------ #
-# ------------------------------------------------------------------------------------------------------ #
-# ------------------------------------------------------------------------------------------------------ #
-# ------------------------------------------------------------------------------------------------------ #
-# ------------------------------------------------------------------------------------------------------ #
-
-# ------------------------------------------------------------------------------------------------------ #
-#  THE FOLLOWING FUNCTIONS ARE EXTRAS THAT I WROTE BUT NEVER USED. THEY MAY OR MAY NOT WORK AS INTENDED  #
-# ------------------------------------------------------------------------------------------------------ #
-
+# -----------------------------------------------------------------------------------------------------------------------------
 
 myGetUserInput(){
 	# this is intended as a user input request function, but apparently i never ended up using it....
@@ -1105,6 +1113,10 @@ zfs-depmod() {
 	done;
 	depmod -a
 }
+# [[ "${rootDisk}" == /dev/mapper/* ]] && [[ -n "$(cryptsetup status "${rootDisk##*/}" | grep 'device:')" ]] && rootDisk="$(cryptsetup status "${rootDisk##*/}" | grep 'device:' | sed -E s/'^[ \t]*device\:[ \t]*(.*)$'/'\1'/)"
+	# [[ -z "${bootDisk}" ]] && [[ -d "/boot" ]] && [[ -n "$(mount -l | grep 'on /boot type' | sed -E s/'^(.*) on \/boot type .*$'/'\1'/)" ]] && bootDisk="$(mount -l | grep 'on /boot type' | sed -E s/'^(.*) on \/boot type .*$'/'\1'/)";
+	# [[ -z "${bootDisk}" ]] && [[ -d "/boot/efi" ]] && [[ -n "$(mount -l | grep 'on /boot/efi type' | sed -E s/'^(.*) on \/boot\/efi type .*$'/'\1'/)" ]] && bootDisk="$(mount -l | grep 'on /boot/efi type' | sed -E s/'^(.*) on \/boot\/efi type .*$'/'\1'/)";
+	# [[ -z "${bootDisk}" ]] && [[ -d "/efi" ]] && [[ -n "$(mount -l | grep 'on /efi type' | sed -E s/'^(.*) on \/efi type .*$'/'\1'/)" ]] && bootDisk="$(mount -l | grep 'on /efi type' | sed -E s/'^(.*) on \/efi type .*$'/'\1'/)";
 
 zfsGetMountingOrder() {
 	# returns a mounting order such that everything under the specified filesystem is mounted such that a parent directory mount point always is mounted before any mounts to one of its sub-directories
@@ -1198,4 +1210,164 @@ my-tail() {
 		[[ -z "${nLines}" ]] && echo "insufficient input...must provide the number of lines" >&2 && return
 
 		echo -n "${inAll}" | sed -zE s/'^(.*)((\n[^\n]*){'"${nLines}"'})$'/'\'"${negFlag}"''/
-}
+
+}	
+	
+# misc code comment blocks removed
+
+
+
+	#	for nn in /etc/systemd/personal/*.service; do 
+	#		[[ "${nn##*/}" != 'my-zfs-'* ]] && kernelCmdline_systemdUnits="${kernelCmdline_systemdUnits} "'rd.systemd.mask="'"${nn##*/}"'"'
+	#	done
+	#[[ -f "/etc/systemd/personal/zfsSwitchServices.sh" ]] && kernelCmdline_systemdUnits="${kernelCmdline_systemdUnits} "'rd.systemd.run="/bin/chmod 777 /etc/systemd/personal/zfsSwitchServices.sh" systemd.run="/bin/bash -c '"'"'/etc/systemd/personal/zfsSwitchServices.sh'"'"'"'
+	# systemd.run_success_action=none systemd.run_failure_action=none'
+	#[[ ${rootFSType#*=} =~ ^[Zz][Ff][Ss]$ ]] && kernelCmdline_systemdUnits="${kernelCmdline_systemdUnits} "'rd.systemd.units="my-zfs-import.service" rd.systemd.units="my-zfs-mount.service"'
+	
+	#if [[ ${rootFSType#*=} =~ ^[Zz][Ff][Ss]$ ]]; then
+	#...
+	#else
+	#	for nn in /etc/systemd/personal/*.service; do 
+	#		[[ ${nn} =~ ^my-zfs-.*\.service$ ]]] && kernelCmdline_systemdUnits='${kernelCmdline_systemdUnits} systemd.mask="'"${nn##*/}"'"'
+	#	done
+	#fi
+
+	# Setup additional (non-kernel-commandline) dracut arguments. 
+	# You may want to customize the initial 'dracutArgsExtra' variable, though this isnt as important as custom setting 'kernelCmdline_static' is
+
+
+	#if (( $# == 0 )); then
+	#	for nn in /usr/lib/modules/*; do
+	#		#modinfo "${nn}/kernel/drivers/scsi"/**/*{iscsi,boot,init,transport}* --field name | while read -r mm; do  kernelCmdline_static="${kernelCmdline_static} rd.driver.pre=${mm}"; done
+	#		for mm in ${nn}/extra/{,*/}*.{ko,ko.xz}; do 
+	#			[[ "${mm}" != *'*'* ]] && dracutArgsExtra="${dracutArgsExtra} --include ${mm} ${mm} --install ${mm}"; 
+	#		done
+	#	done
+	#else
+	#	for nn in "${@}"; do 
+	#		#modinfo "/usr/lib/modules/${nn}/kernel/drivers/scsi"/**/*{iscsi,boot,init,transport}* --field name | while read -r mm; do  kernelCmdline_static="${kernelCmdline_static} rd.driver.pre=${mm}"; done
+	#		[[ -d "/usr/lib/modules/${nn}" ]] && for mm in /usr/lib/modules/${nn}/extra/{,*/}*.{ko,ko.xz}; do
+	#			[[ "${mm}" != *'*'* ]] && dracutArgsExtra="${dracutArgsExtra} --include ${mm} ${mm} --install ${mm}"; 
+	#		done
+	#	done  
+	#fi
+
+	# ensure a few extra modules have prerequisites met
+	#[[ -n $(for nn in {biosdevname,nbd,gpg,clevis,stratis,busybox,udisks2-iscsi}; do rpm -qa | grep -q "$nn" || echo "1"; done) ]] || dnf install -y biosdevname nbd gpg *clevis* stratis* busybox udisks2-iscsi
+	#sudo systemctl enable clevis-luks-askpass.path
+
+	#if (( $# == 0 )) || [[ ${*,,} =~ ^(.+\ )?-+a(ll)?(\ .+)?$ ]]; then
+	#	for nn in "$(myFindEFIDev --mnt)/EFI/Linux/linux-"*"$(uname -m)-"*".efi"; do
+	#		\mv -f "${nn}" "${nn%$(uname -m)*}$(uname -m)_OLD-${nn##*-}";
+	#	done
+	#	dracut -fvM --uefi --kernel-cmdline "${kernelCmdline}" --regenerate-all ${dracutArgsExtra};
+	#else
+	#	for nn in "${@}"; do
+	#		[[ -n "$(find "$(myFindEFIDev --mnt)/EFI/Linux/" -type f -name "linux-${nn}-*")" ]] && \mv -f "${nn}" "${nn%$(uname -m)*}$(uname -m)_OLD-${nn##*-}";
+
+	#				for nn in "${@}"; do
+	#	done;
+	#fi;
+						
+	
+	
+
+	#dracutArgsExtra='--persistent-policy "by-id" --no-hostonly-i18n --no-hostonly --nostrip --hostonly-cmdline --early-microcode --nohardlink  --no-machineid --install /bin/vim --install /bin/tee --install /bin/seq --install /bin/find --install /bin/env --install /bin/wc --install /bin/tail --install /bin/head --force-add crypt --force-add dm --force-add zfs --force-add bash --force-add dracut-systemd --force-add systemd --force-add uefi-lib --force-add kernel-modules --force-add kernel-modules-extra --force-add iscsi --force-add plymouth --include /etc/iscsi/initiatorname.iscsi /etc/iscsi/initiatorname.iscsi --include /run/cryptsetup /run/cryptsetup'
+	#if [[ "$(sudo systemctl get-default)" == "graphical.target" ]]; then
+	#	sudo systemctl set-default graphical.target;
+	#	sudo systemctl set-default graphical.target --global --user;
+	#	sudo systemctl set-default graphical.target --global --system;
+	#fi
+		# ( [[ -e "/usr/lib/modules/${nn}" ]] || [[ -e "/usr/src/kernels/${nn}" ]] ) && 
+	# get list of current menu entries and kernel versions of items to add
+	
+#	local efiCurMenu="";
+#	efiCurMenu="$(efibootmgr -v 2>&1)"
+
+#	# check if *_RESCUE.efi boot file exists, if not copy current efi boot file into *_RESCUE efi boot file
+#	# shift into *_OLD.efi if --shift-efi flag is given 
+#	echo "${kverKernel}" | while read -r nn; do 
+#		efiFileListTemp="$(echo "${efiFileList}" | grep "${nn}")"
+#		efiFileListTemp0="$(echo "${efiFileListTemp}" | grep -E "${nn}(-[0-9a-zA-Z]{32})?\.efi")"
+#
+#		# skip if no "current" EFI file found for given kernel
+#		[[ -n ${efiFileListTemp0} ]] || continue
+#
+#		# Copy into _RESCUE if it doesnt already exist
+#		su -c '! [[ -f '"${efiFileListTemp0//$(uname -m)/$(uname -m)_RESCUE}"' ]] && \cp -f '"${efiFileListTemp0}"' '"${efiFileListTemp0//$(uname -m)/$(uname -m)_RESCUE}" && echo -e "\nNO \"*_RESCUE.efi\" BACKUP EXISTS for ${efiFileListTemp0} -- copying ${efiFileListTemp0} into ${efiFileListTemp0//$(uname -m)/$(uname -m)_RESCUE} \n" >&2 
+#
+#		# Copy into _OLD if shiftEFIFlag=1
+#		(( ${shiftEFIFlag} == 1 )) && su -c '\cp -f '"${efiFileListTemp0}"' '"${efiFileListTemp0//$(uname -m)/$(uname -m)_OLD}" && echo -e "\nSHIFTING CURRENT \"*.efi\" INTO \"*_OLD.efi\" for ${efiFileListTemp0} -- copying ${efiFileListTemp0} into ${efiFileListTemp0//$(uname -m)/$(uname -m)_OLD} \n" >&2 
+#
+#		# Copy into _OLD if shiftEFIFlag=1
+#		#(( $shiftEFIFlag == 1 )) && su -c '\cp -f '"${efiFileListTemp0}"' '"${efiFileListTemp0//$(uname -m)/$(uname -m)_OLD}" && echo "Copying ${efiFileListTemp0} into ${efiFileListTemp0//$(uname -m)/$(uname -m)_OLD} \n" >&2
+#		
+#		# Copy into _OLD if it doesnt already exist
+#		#su -c '! [[ -f '"${efiFileListTemp0//$(uname -m)/$(uname -m)_OLD}"' ]] && \cp -f '"${efiFileListTemp0}"' '"${efiFileListTemp0//$(uname -m)/$(uname -m)_OLD}" && echo -e "\nNO \"*_OLD.efi\" BACKUP EXISTS for ${efiFileListTemp0} -- copying ${efiFileListTemp0} into ${efiFileListTemp0//$(uname -m)/$(uname -m)_OLD} \n" >&2 
+#
+#	done
+#	
+#	# regenerate efiFileList
+#	efiFileList="$(su -c 'find '"${efiMount}"' -type f -name '"'"'linux-*.efi'"'" | grep -E '\/Linux\/[^\/]*$' | sort -V)"
+
+#	for nn in "${efiFileListA[@]}"; do
+#		curInd="$(echo "${efiMenu}" | grep "${nn}" | sed -E s/'^Boot([0-9A-Fa-f]{4}).*$'/'\1'/)"
+#		bootOrderInd="$(cat <(echo "${curInd}") <(echo "${bootOrderInd}" | grep -v "${curInd}"))"
+#	done
+
+	#mapfile -t bootOrderInd < <(echo -n "$(efibootmgr | grep -E '^BootOrder\:' | sed -E s/'^BootOrder\: (.*)$'/'\1'/ | myuniq | sed -zE s/'\n'/' '/g)")
+
+	# find base dir for efi device. should be /boot, /boot/efi, or /efi, depending of the system setup
+	#if (( $# > 0 )) && [[ -d "${1}" ]]; then
+	#	efiMount="${1}";
+	#else
+	#	efiMount="$(myFindEFIMount)"
+	#fi
+
+	#efiDev="$(mount -l | grep -F "${efiMount}" | sed -E s/'^([^ ]*) .*$'/'\1'/ | sort -u)";
+	#efiFileList="$(echo "$efiFileList" | grep -F "$(uname -m)_OLD-"; echo "$efiFileList" | grep -F "$(uname -m)_RESCUE-"; echo "$efiFileList" | grep -F "$(uname -m)-")"
+		#efiFileList="$(find "${efiMount}/EFI/Linux/" -maxdepth 1 -type f -name "linux-*.efi" | sort -V)";
+	#echo  "$efiFileList" | grep -v -E '_(OLD|RESCUE)-' | sort -u | while read -r nn; do [[ ! -f "${nn//$(uname -m)/$(uname -m)_RESCUE}" ]] && cp "${nn}" "${nn//$(uname -m)/$(uname -m)_RESCUE}" && echo -e "\nSince no ${nn%$(uname -m)*}_RESCUE efi file exists, \nthe current efi boot file ${nn%$(uname -m)*} has been saved as a working backup. \nNote that this is not auto updated - you will have to manually update this file from now on (should you want to). \n" >&2; done
+
+	# get updated list of current menu entries and kernel versions of items to add
+	
+	#efiFileList="$(find "${efiMount}/EFI/Linux/" -maxdepth 1 -type f -name "linux-*.efi" | sort -V)"; 
+
+	#efiFileList0="$(echo "$efiFileList" |  sed -E s/'^.*\/EFI\/Linux\/linux-(.*)\.'"$(uname -m)"'.*$'/'\1'/ | sort -u | sort -V)"
+
+	#efiFileList="$(echo "${efiFileList0}" | while read -r nn; do echo "$efiFileList" | grep 'linux-'"${nn}.$(uname -m)" | grep -F "$(uname -m)_OLD-"; echo "$efiFileList" | grep 'linux-'"${nn}.$(uname -m)" | grep -F "$(uname -m)_RESCUE-"; echo "$efiFileList" | grep 'linux-'"${nn}.$(uname -m)" | grep -F "$(uname -m)-"; done)"	
+
+		#(( $(echo "${efiFileListTemp}" | wc -l) > 1 )) && echo "${efiFileListTemp,,}" | tail -n -1 | sed -E s/'^boot([0-9a-f]{4}).*$'/'\1'/ | while read -r mm; do efibootmgr -B -b "${mm}"; done
+	  
+
+
+
+
+	#local nn
+	#local mm
+	#efibootmgr -v | sed -E s/'^(Boot.{5}) (.*)$'/'\2 \1'/ | sed -E s/'^(.*[^\*])\*$'/'\1'/ | sort -u | grep -Ev '(Boot((Current)|(Order)))|(Timeout)' | while read -r nn; do 
+	#	[[ "${mm%Boot*}" == "${nn%Boot*}" ]] && efibootmgr -B -b "${nn##*Boot}"; 
+	#	mm="${nn}"; 
+	#done
+	
+
+
+
+#[[ -n "${EFIout}" ]] && echo "${EFIout}" || ( [[ ! "${1,,}" =~ ^-+m(ou)?nt(-?pnt)?$ ]] && tee || while read -r nn; do findmnt "${nn}" | tail -n -1 | sed -E s/'^([^ \t]*).*$'/'\1'/; done )
+
+
+
+	#local efiFileListTempOLD=""; 
+	#local efiFileListTempRESCUE=""; 
+
+		#efiFileListTempOLD="$(echo "${efiFileListTemp}" | grep -E "$(uname -m)_OLD(-[0-9a-zA-Z]{32})?\.efi")"
+		#efiFileListTempRESCUE="$(echo "${efiFileListTemp}" | grep -E "$(uname -m)_RESCUE(-[0-9a-zA-Z]{32})?\.efi")"
+
+
+#	local curInd
+	#outAll="$(echo "${outAll}" | grep -E '.+')"
+	#echo "${outAll}"
+		#printf '%s\n' "${removalType[@]}" | grep -q 'kernel' && myFindInstalledKernels | grep -q "$(echo "${efiPathCur}" | sed -E s/'^.*\/linux-(.*'"$(uname -m)"'[^-]*)(-[0-9a-fA-F]{32})?\.efi'/'\1'/)" || keepFlag=0
+	#	printf '%s\n' "${removalType[@]}" | grep -q 'kernel' && myFindInstalledKernels | grep -q "$(echo "${efiPathCur}" | sed -E s/'^.*\\linux-(.*\.efi)\)$'/'\1'/ | sed -E s/'((_OLD)|(_RESCUE))'//g | sed -E s/'-[0-9a-f]{0,32}\.efi'// | sed -E s/'^.*\/linux-'//)" || keepFlag=0
+
+
