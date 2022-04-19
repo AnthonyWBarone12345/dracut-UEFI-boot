@@ -128,8 +128,8 @@ UEFIDracutUpdate() {
 		rootFSType='zfs'
 		rootFlags='zfsutil,rw,relatime,xattr,posixacl'
 		bootDisk='/dev/disk/by-id/<boot-disk-ID>'
-		luksUUID='luks-<luks-uuid>'
-		#luksUUID="luks-$(cryptsetup luksUUID /dev/disk/by-id/<luks-disk-ID>)"
+ 		luksUUID='luks-<luks-uuid>'
+ 		#luksUUID="luks-$(cryptsetup luksUUID /dev/disk/by-id/<luks-disk-ID>)"
 		#usrDisk='ZFS=FEDORA/ROOT/USR'
 		#usrFSType='zfs'
 		#usrFlags='zfsutil,rw,relatime,xattr,posixacl'
@@ -276,13 +276,15 @@ UEFIDracutUpdate() {
 		UEFIBootUpdate --shift-efi "${kernels[$ll]}"
 	
 		# generate rescue, if needed	
-		UEFIBootUpdate --check-rescue "${kernels[$ll]}" || { su -c 'dracut -fvM --uefi --kernel-cmdline "'"${kernelCmdline}"'" --kver '"${kernels[$ll]}"' '"${dracutArgsExtra}"' '"${dracutArgsRescue}"' '"${dracutArgsExtraKmod[$ll]}"; UEFIBootUpdate --shift-efi-rescue "${kernels[$ll]}"; }
+		UEFIBootUpdate --check-rescue "${kernels[$ll]}" || { su -c 'dracut -fvM --uefi --kernel-cmdline "'"${kernelCmdline}"'" --kver '"${kernels[$ll]}"' '"${dracutArgsExtra}"' '"${dracutArgsRescue}"' '"${dracutArgsExtraKmod[$ll]}"; sleep 2; sync; UEFIBootUpdate --shift-efi-rescue "${kernels[$ll]}"; }
 		# generate EFI executable boot image with dracut
 		su -c 'dracut -fvM --uefi --kernel-cmdline "'"${kernelCmdline}"'" --kver '"${kernels[$ll]}"' '"${dracutArgsExtra}"' '"${dracutArgsNoRescue}"' '"${dracutArgsExtraKmod[$ll]}";
 
 
 		
 	done
+
+	sleep 2; sync
 
 	UEFIBootUpdate	
 
@@ -342,7 +344,7 @@ UEFIBootUpdate() {
 		[[ "${nn,,}" =~ ^-+s(hift)?-?(e(fi)?)?$ ]] && shiftEFIFlag=1 && continue
 		[[ "${nn,,}" =~ ^-+s(hift)?-?(e(fi)?)?-r(escue)?$ ]] && shiftEFIFlag=2 && continue
 		[[ "${nn,,}" =~ ^-+c(heck)?-?(r(escue)?)?$ ]] && checkRescueFlag=1 && continue
-		[[ -d "/usr/lib/modules/${nn}" ]] && kverKernelValid[${#kverKernelValid[@]}]="${nn}"
+		{ [[ -d "/usr/lib/modules/${nn}" ]] || [[ "${nn}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\-[0-9]+\.fc[0-9]+\..+$ ]]; } && kverKernelValid[${#kverKernelValid[@]}]="${nn}"
 	done
 
 	# get various device + partition info
@@ -362,13 +364,15 @@ UEFIBootUpdate() {
 	efiFileList="$(su -c 'find '"${efiMount}"' -type f -name '"'"'linux-*.efi'"'" | grep -E '\/Linux\/[^\/]+$' | sort -V)"
 	[[ -z "${efiFileList}" ]] && echo "No .efi files found on the EFI Partition at '${efiMount}/EFI/Linux/linux-*.efi'" >&2 && return 1
 
-	kverKernel="$(echo "$efiFileList" | sed -E s/'^.*\/linux-(.*'"$(uname -m)"').*\.efi$'/'\1'/ | sort -u)"
+	kverKernel="$(echo "$(echo "${efiFileList}" | sed -E s/'^.*\/linux-(.*'"$(uname -m)"').*\.efi$'/'\1'/ | sort -u; printf '%s\n' "${kverKernelValid[@]}"; myFindInstalledKernels)" | sort -u | grep -E '[0-9a-zA-Z]+')"
 
-	(( ${#kverKernelValid[@]} > 0 )) && kverKernel="$(echo "${kverKernel}" | while read -r nn; do for mm in "${kverKernelValid[@]}"; do echo "${nn}" | grep -q "${mm}" && echo "${nn}";  done; done)"
+	#(( ${#kverKernelValid[@]} > 0 )) && kverKernel="$(echo "${kverKernel}" | while read -r nn; do for mm in "${kverKernelValid[@]}"; do echo "${nn}" | grep -q "${mm}" && echo "${nn}";  done; done)"
+	(( ${#kverKernelValid[@]} > 0 )) && kverKernel="$(echo "${kverKernel}" | grep -E '(('"$(echo ${kverKernelValid[@]} | sed -E s/' '/')|('/g)"'))')"
 
 	(( ${checkRescueFlag} == 1 )) && (( $(echo "${kverKernel}" | wc -l) > 1 )) && echo "WARNING: the --check-rescue flag can only be evaluated for a single kernel. Multiple kernels were specified. The FIRST kernel listed ($(echo "${kverKernel}" | head -n 1)) will be evaluated" >&2
 
-	mapfile -t kverKernelA < <(echo "${kverKernel}")
+	mapfile -t kverKernelA < <(echo "${kverKernel}" | grep -E '[0-9a-zA-Z]+')
+	kverKernelA=("${kverKernelA[@]}")
 
 	if { (( ${shiftEFIFlag} > 0 )) || (( ${checkRescueFlag} == 1 )); }; then
 		for nn in "${kverKernelA[@]}"; do
@@ -398,8 +402,11 @@ UEFIBootUpdate() {
 	# consolidate files into "${efiMount}/EFI/Linux"
 	# if multiple versions exist (*.efi, *_OLD.efi, *_RESCUE.efi) for a given kernel, keep the newest
 	for nn in "${kverKernelA[@]}"; do
+		echo "${nn}" | grep -q -E '[0-9a-zA-Z]+' || continue
+
 		efiFileListTemp="$(echo "${efiFileList}" | grep "${nn}")"
 		efiFileListTemp="$(echo "${efiFileListTemp}" | grep "${efiMount}/EFI/Linux"; echo "${efiFileListTemp}" | grep -v "${efiMount}/EFI/Linux")"
+
 		mapfile -t efiFileListTemp0a < <(echo "${efiFileListTemp}" | grep -E "${nn}(-[0-9a-zA-Z]{32})?\.efi")
 		mapfile -t efiFileListTempOLDa < <(echo "${efiFileListTemp}" | grep -E "${nn}[^\-]*_OLD(-[0-9a-zA-Z]{32})?\.efi")
 		mapfile -t efiFileListTempRESCUEa < <(echo "${efiFileListTemp}" | grep -E "${nn}[^\-]*_RESCUE(-[0-9a-zA-Z]{32})?\.efi")
